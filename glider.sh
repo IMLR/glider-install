@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 
 Folder="/usr/local/glider"
+Config_folder="/root/.glider"
 
 Green_font_prefix="\033[32m" && Red_font_prefix="\033[31m" && Green_background_prefix="\033[42;37m" && Red_background_prefix="\033[41;37m" && Font_color_suffix="\033[0m"
 Info="${Green_font_prefix}[信息]${Font_color_suffix}"
 Error="${Red_font_prefix}[错误]${Font_color_suffix}"
 Tip="${Green_font_prefix}[注意]${Font_color_suffix}"
+Separator_1="————————————————————"
 
 check_sys(){
 	if [[ -f /etc/redhat-release ]]; then
@@ -28,6 +30,11 @@ check_sys(){
 
 check_pid(){
 	PID=`ps -ef | grep "glider" | grep -v "grep" | grep -v "glider.sh"| grep -v "init.d" | grep -v "service" | awk '{print $2}'`
+}
+
+check_instance_pid(){
+	local config_name=$1
+	INSTANCE_PID=`ps -ef | grep "glider -config ${Config_folder}/${config_name}.conf" | grep -v "grep" | awk '{print $2}'`
 }
 
 get_ip(){
@@ -62,7 +69,9 @@ check_new_ver(){
 
 check_install_status(){
 	[[ ! -e "/usr/bin/glider" ]] && echo -e "${Error} glider 没有安装，请检查 !" && exit 1
-	[[ ! -e "/root/.glider/glider.conf" ]] && echo -e "${Error} glider 配置文件不存在，请检查 !" && [[ $1 != "un" ]] && exit 1
+	if [[ $1 == "check_conf" ]]; then
+		[[ ! -e "${Config_folder}/glider.conf" ]] && echo -e "${Error} glider 配置文件不存在，请检查 !" && [[ $2 != "un" ]] && exit 1
+	fi
 }
 
 download_glider(){
@@ -87,8 +96,8 @@ download_glider(){
 	cd "${Folder}"
 	chmod +x glider
 	cp glider /usr/bin/glider
-	mkdir /root/.glider
-	wget --no-check-certificate https://raw.githubusercontent.com/ooxoop/glider-install/master/glider.conf.example -O /root/.glider/glider.conf
+	mkdir -p ${Config_folder}
+	wget --no-check-certificate https://raw.githubusercontent.com/ooxoop/glider-install/master/glider.conf.example -O ${Config_folder}/glider.conf
 	echo -e "${Info} glider 主程序安装完毕！开始配置服务文件..."
 }
 
@@ -111,14 +120,19 @@ service_glider(){
 }
 
 config_ss(){
+	local config_name=$1
+	[[ -z "${config_name}" ]] && config_name="glider"
+	
 	Set_config_port
 	Set_config_password
 	Set_config_method
 	ss_link="ss://${ss_method}:${ss_password}@:${port}"
-	if [[ -e "/root/.glider/glider.conf" ]]; then
-		rm -rf /root/.glider/glider.conf
-	fi
-	echo -e "verbose=True\nlisten=${ss_link}" >> /root/.glider/glider.conf
+	
+	local config_path="${Config_folder}/${config_name}.conf"
+	[[ -e "${config_path}" ]] && rm -rf "${config_path}"
+	
+	echo -e "verbose=True\nlisten=${ss_link}" >> "${config_path}"
+	echo -e "${Info} 配置文件 ${config_name}.conf 已创建！"
 }
 
 Set_config_port(){
@@ -191,40 +205,188 @@ ${Tip} CHACHA20-*系列加密方式，需要额外安装依赖 libsodium ，否�
 }
 
 View_config(){
-	listen=`cat /root/.glider/glider.conf | grep -v '#' | grep "listen=" | awk -F "=" '{print $NF}'`
+	local config_name=$1
+	[[ -z "${config_name}" ]] && config_name="glider"
+	
+	local config_path="${Config_folder}/${config_name}.conf"
+	if [[ ! -e "${config_path}" ]]; then
+		echo -e "${Error} 配置文件 ${config_name}.conf 不存在！"
+		return
+	fi
+	
+	echo -e "配置文件 ${config_name}.conf 内容如下："
+	listen=`cat "${config_path}" | grep -v '#' | grep "listen=" | awk -F "=" '{print $NF}'`
 	if [[ "${listen}" != "" ]]; then
 		echo -e "当前监听端口的协议是： 
 ${Green_font_prefix}${listen}${Font_color_suffix}"
 	else
 		echo "读取不到配置信息，请检查配置文件"
 	fi
-	forward=`cat /root/.glider/glider.conf | grep -v '#' | grep "forward=" | awk -F "=" '{print $NF}'`
+	forward=`cat "${config_path}" | grep -v '#' | grep "forward=" | awk -F "=" '{print $NF}'`
 	if [[ "${forward}" != "" ]]; then
 		echo -e "监听接收的数据将转发到： 
 ${Green_font_prefix}${forward}${Font_color_suffix}"
 	fi
 }
 
-Set_config(){
-	echo && echo -e "glider 快速配置，请选择你需要的 配置
+List_instances(){
+	echo -e "${Info} 当前所有实例："
+	ls -1 ${Config_folder}/*.conf 2>/dev/null | while read config_path; do
+		config_name=$(basename ${config_path} .conf)
+		check_instance_pid ${config_name}
+		if [[ ! -z "${INSTANCE_PID}" ]]; then
+			echo -e "${Green_font_prefix}${config_name}${Font_color_suffix} [${Green_font_prefix}运行中${Font_color_suffix}] - PID: ${INSTANCE_PID}"
+		else
+			echo -e "${Green_font_prefix}${config_name}${Font_color_suffix} [${Red_font_prefix}未运行${Font_color_suffix}]"
+		fi
+	done
+	
+	if [[ ! -e "${Config_folder}/"*.conf ]]; then
+		echo -e "${Error} 未找到任何实例配置文件！"
+	fi
+}
 
-${Green_font_prefix}1.${Font_color_suffix} 设置一个Shadowsocks代理
---部署一个普通的ss代理
-${Green_font_prefix}2.${Font_color_suffix} 设置一个支持网易云音乐解锁的Shadowsocks代理
---该选项将会自动部署安装网易云音乐解锁代理 UnblockNeteaseMusic
-${Green_font_prefix}3.${Font_color_suffix} 设置一个Socks5代理，将该代理转发到Shadowsocks代理
---在国内中转部署，可作为telegram内置代理使用，出国协议为ss" && echo
-	read -e -p "默认：取消" config_code
-	[[ -z "${config_code}" ]] && config_code="0"
-	if [[ ${config_code} == "1" ]]; then
-		config_ss
-		Restart_glider
-	elif [[ ${config_code} == "2" ]]; then
-		config_ss_music
-	elif [[ ${config_code} == "3" ]]; then
-		config_ss_telegram
+Create_instance(){
+	echo -e "${Info} 创建新的glider实例"
+	read -e -p "请输入实例名称 (默认: glider_new):" instance_name
+	[[ -z "${instance_name}" ]] && instance_name="glider_new"
+	
+	if [[ -e "${Config_folder}/${instance_name}.conf" ]]; then
+		echo -e "${Error} 实例 ${instance_name} 已存在！"
+		read -e -p "是否覆盖? [Y/n]:" yn
+		[[ -z "${yn}" ]] && yn="y"
+		if [[ ${yn} == [Nn] ]]; then
+			echo "已取消..."
+			return
+		fi
+	fi
+	
+	config_ss ${instance_name}
+	echo -e "${Info} 实例 ${instance_name} 创建完成！"
+}
+
+Delete_instance(){
+	List_instances
+	echo
+	read -e -p "请输入要删除的实例名称:" instance_name
+	[[ -z "${instance_name}" ]] && echo "已取消..." && return
+	
+	if [[ ! -e "${Config_folder}/${instance_name}.conf" ]]; then
+		echo -e "${Error} 实例 ${instance_name} 不存在！"
+		return
+	fi
+	
+	check_instance_pid ${instance_name}
+	if [[ ! -z "${INSTANCE_PID}" ]]; then
+		echo -e "${Info} 停止实例 ${instance_name}..."
+		kill -9 ${INSTANCE_PID}
+	fi
+	
+	rm -f "${Config_folder}/${instance_name}.conf"
+	echo -e "${Info} 实例 ${instance_name} 已删除！"
+}
+
+Start_instance(){
+	List_instances
+	echo
+	read -e -p "请输入要启动的实例名称:" instance_name
+	[[ -z "${instance_name}" ]] && echo "已取消..." && return
+	
+	if [[ ! -e "${Config_folder}/${instance_name}.conf" ]]; then
+		echo -e "${Error} 实例 ${instance_name} 不存在！"
+		return
+	fi
+	
+	check_instance_pid ${instance_name}
+	if [[ ! -z "${INSTANCE_PID}" ]]; then
+		echo -e "${Error} 实例 ${instance_name} 已在运行！"
+		return
+	fi
+	
+	echo -e "${Info} 启动实例 ${instance_name}..."
+	glider -config "${Config_folder}/${instance_name}.conf" > "${Config_folder}/${instance_name}.log" 2>&1 &
+	sleep 2
+	check_instance_pid ${instance_name}
+	if [[ ! -z "${INSTANCE_PID}" ]]; then
+		echo -e "${Info} 实例 ${instance_name} 已启动！"
+		View_config ${instance_name}
 	else
-		exit 1
+		echo -e "${Error} 实例 ${instance_name} 启动失败！请查看日志文件 ${Config_folder}/${instance_name}.log"
+	fi
+}
+
+Stop_instance(){
+	List_instances
+	echo
+	read -e -p "请输入要停止的实例名称:" instance_name
+	[[ -z "${instance_name}" ]] && echo "已取消..." && return
+	
+	if [[ ! -e "${Config_folder}/${instance_name}.conf" ]]; then
+		echo -e "${Error} 实例 ${instance_name} 不存在！"
+		return
+	fi
+	
+	check_instance_pid ${instance_name}
+	if [[ -z "${INSTANCE_PID}" ]]; then
+		echo -e "${Error} 实例 ${instance_name} 未在运行！"
+		return
+	fi
+	
+	echo -e "${Info} 停止实例 ${instance_name}..."
+	kill -9 ${INSTANCE_PID}
+	echo -e "${Info} 实例 ${instance_name} 已停止！"
+}
+
+View_instance_log(){
+	List_instances
+	echo
+	read -e -p "请输入要查看日志的实例名称:" instance_name
+	[[ -z "${instance_name}" ]] && echo "已取消..." && return
+	
+	if [[ ! -e "${Config_folder}/${instance_name}.conf" ]]; then
+		echo -e "${Error} 实例 ${instance_name} 不存在！"
+		return
+	fi
+	
+	if [[ ! -e "${Config_folder}/${instance_name}.log" ]]; then
+		echo -e "${Error} 实例 ${instance_name} 的日志文件不存在！"
+		return
+	fi
+	
+	cat "${Config_folder}/${instance_name}.log"
+}
+
+Edit_instance_config(){
+	List_instances
+	echo
+	read -e -p "请输入要编辑配置的实例名称:" instance_name
+	[[ -z "${instance_name}" ]] && echo "已取消..." && return
+	
+	if [[ ! -e "${Config_folder}/${instance_name}.conf" ]]; then
+		echo -e "${Error} 实例 ${instance_name} 不存在！"
+		return
+	fi
+	
+	vi "${Config_folder}/${instance_name}.conf"
+	echo -e "${Info} 配置文件已编辑，是否重启实例？[Y/n]"
+	read -e -p ":" yn
+	[[ -z "${yn}" ]] && yn="y"
+	if [[ ${yn} == [Yy] ]]; then
+		check_instance_pid ${instance_name}
+		if [[ ! -z "${INSTANCE_PID}" ]]; then
+			kill -9 ${INSTANCE_PID}
+			sleep 1
+		fi
+		echo -e "${Info} 重启实例 ${instance_name}..."
+		glider -config "${Config_folder}/${instance_name}.conf" > "${Config_folder}/${instance_name}.log" 2>&1 &
+		sleep 2
+		check_instance_pid ${instance_name}
+		if [[ ! -z "${INSTANCE_PID}" ]]; then
+			echo -e "${Info} 实例 ${instance_name} 已重启！"
+			View_config ${instance_name}
+		else
+			echo -e "${Error} 实例 ${instance_name} 重启失败！请查看日志文件 ${Config_folder}/${instance_name}.log"
+		fi
 	fi
 }
 
@@ -237,7 +399,7 @@ Install_glider(){
 }
 
 Start_glider(){
-	check_install_status
+	check_install_status "check_conf"
 	check_pid
 	[[ ! -z ${PID} ]] && echo -e "${Error} glider 正在运行，请检查 !" && exit 1
 	/etc/init.d/glider start
@@ -245,22 +407,61 @@ Start_glider(){
 }
 
 Stop_glider(){
-	check_install_status
+	check_install_status "check_conf"
 	check_pid
 	[[ -z ${PID} ]] && echo -e "${Error} glider 没有运行，请检查 !" && exit 1
 	/etc/init.d/glider stop
 }
 
 Restart_glider(){
-	check_install_status
+	check_install_status "check_conf"
 	check_pid
 	[[ ! -z ${PID} ]] && /etc/init.d/glider stop
 	/etc/init.d/glider start
 	View_config
 }
 
+Manage_instances(){
+	echo && echo -e " glider 多实例管理
+————————————
+${Green_font_prefix} 1.${Font_color_suffix} 查看所有实例
+${Green_font_prefix} 2.${Font_color_suffix} 创建新实例
+${Green_font_prefix} 3.${Font_color_suffix} 启动实例
+${Green_font_prefix} 4.${Font_color_suffix} 停止实例
+${Green_font_prefix} 5.${Font_color_suffix} 删除实例
+${Green_font_prefix} 6.${Font_color_suffix} 编辑实例配置
+${Green_font_prefix} 7.${Font_color_suffix} 查看实例日志
+————————————" && echo
+	read -e -p " 请输入数字 [1-7]:" instances_num
+	case "$instances_num" in
+		1)
+		List_instances
+		;;
+		2)
+		Create_instance
+		;;
+		3)
+		Start_instance
+		;;
+		4)
+		Stop_instance
+		;;
+		5)
+		Delete_instance
+		;;
+		6)
+		Edit_instance_config
+		;;
+		7)
+		View_instance_log
+		;;
+		*)
+		echo "请输入正确数字 [1-7]"
+		;;
+	esac
+}
 
-echo && echo -e " glider 一键安装管理脚本beta ${Red_font_prefix}[v${sh_ver}]${Font_color_suffix}
+echo && echo -e " glider 一键安装管理脚本beta ${Red_font_prefix}[v1.1.0]${Font_color_suffix}
  -- ooxoop | lajiblog.com --
 
 ${Green_font_prefix} 1.${Font_color_suffix} 安装 glider
@@ -273,6 +474,8 @@ ${Green_font_prefix} 5.${Font_color_suffix} 查看 当前配置
 ${Green_font_prefix} 6.${Font_color_suffix} 设置 配置文件
 ${Green_font_prefix} 7.${Font_color_suffix} 打开 配置文件
 ${Green_font_prefix} 8.${Font_color_suffix} 查看 日志文件
+————————————
+${Green_font_prefix} 9.${Font_color_suffix} 管理 多实例
 ————————————" && echo
 if [[ -e "/usr/bin/glider" ]]; then
 	check_pid
@@ -285,7 +488,7 @@ else
 	echo -e " 当前状态: ${Red_font_prefix}未安装${Font_color_suffix}"
 fi
 echo
-read -e -p " 请输入数字 [0-10]:" num
+read -e -p " 请输入数字 [0-9]:" num
 case "$num" in
 	1)
 	Install_glider
@@ -306,14 +509,17 @@ case "$num" in
 	Set_config
 	;;
 	7)
-	vi /root/.glider/glider.conf
+	vi ${Config_folder}/glider.conf
 	Restart_glider
 	;;
 	8)
-	cat /root/.glider/glider.log
+	cat ${Config_folder}/glider.log
+	;;
+	9)
+	Manage_instances
 	;;
 	*)
-	echo "请输入正确数字 [0-10]"
+	echo "请输入正确数字 [0-9]"
 	;;
 esac
 
